@@ -1,5 +1,5 @@
 const express = require('express');
-const { astro } = require('iztro');
+const { astro, getStars } = require('iztro'); // 引入 getStars 用于完整星曜
 const cors = require('cors');
 
 const app = express();
@@ -20,6 +20,7 @@ app.get('/', (req, res) => {
  * 
  * 关键修复：
  * - 第4个参数设为 true：禁用 iztro 自动时区修正（避免 13 → 25）
+ * - 使用 getStars() 获取完整星曜列表
  * - 所有响应返回 HTTP 200，业务状态通过 status 字段表示
  */
 app.post('/calculate', (req, res) => {
@@ -112,10 +113,41 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // 6. 构造前端命盘查看链接
+  // 6. 获取完整星曜数据（解决排盘结果不全问题）
+  const starsData = getStars(astrolabe); // 返回所有宫位的完整星曜
+
+  // 找到命宫索引
+  const mingPalaceIndex = astrolabe.palaces.findIndex(p => p.name === '命宫');
+  if (mingPalaceIndex === -1) {
+    return res.json({
+      status: "error",
+      error: "未找到命宫",
+      code: "MISSING_MING_PALACE"
+    });
+  }
+
+  // 获取命宫对应的完整星曜
+  const mingPalaceStars = starsData[mingPalaceIndex];
+  if (!mingPalaceStars) {
+    return res.json({
+      status: "error",
+      error: "命宫星曜数据缺失",
+      code: "MISSING_STARS_DATA"
+    });
+  }
+
+  // 构造完整的 minorStars 列表
+  const completeMinorStars = mingPalaceStars.stars.map(star => ({
+    name: star.name,
+    brightness: star.brightness || '',
+    scope: star.scope || 'origin',
+    position: star.position || ''
+  }));
+
+  // 7. 构造前端命盘查看链接
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(astrolabe.solarDate)}&t=${astrolabe.timeIndex}&g=${astrolabe.gender === '男' ? 'male' : 'female'}&type=solar`;
 
-  // 7. 成功响应
+  // 8. 成功响应（包含完整星曜）
   res.json({
     status: "success",
     message: "紫微排盘成功",
@@ -126,7 +158,10 @@ app.post('/calculate', (req, res) => {
       chineseZodiac: astrolabe.chineseZodiac,
       fiveElements: astrolabe.fiveElementsClass,
       lifePalaceBranch: astrolabe.lifePalaceBranch,
-      ming_palace: astrolabe.palaces.find(p => p.name === '命宫') || null
+      ming_palace: {
+        ...astrolabe.palaces[mingPalaceIndex],
+        minorStars: completeMinorStars // 替换为完整星曜
+      }
     }
   });
 });
