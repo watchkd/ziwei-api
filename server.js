@@ -1,23 +1,44 @@
+const express = require('express');
+const { astro } = require('iztro'); // 注意：iztro 只导出 astro
+const cors = require('cors');
+
+const app = express();
+
+// 启用 CORS 和 JSON 解析
+app.use(cors());
+app.use(express.json({ limit: '1mb' }));
+
+/**
+ * 健康检查接口（用于 Zeabur 探活）
+ */
+app.get('/', (req, res) => {
+  res.status(200).send('Ziwei API is running!');
+});
+
+/**
+ * 紫微斗数排盘接口
+ * 
+ * 支持：
+ * - 日期格式：YYYY-MM-DD
+ * - 小时范围：0–23（整数）
+ * - 性别：'男' 或 '女'
+ * 
+ * 修复：
+ * - 13点变25点 → bySolar 第4参数设为 true（禁用时区修正）
+ * - t=undefined → 使用原始 hour 构造 URL
+ * - getStars 报错 → 移除该函数（iztro 不支持）
+ */
 app.post('/calculate', (req, res) => {
   const { dateStr, timeIndex, gender } = req.body;
 
-  // 1. 参数校验（略，保持不变）
+  // === 参数校验 ===
 
-  const hour = Number(timeIndex);
-  if (isNaN(hour) || !Number.isInteger(hour) || hour < 0 || hour > 23) {
+  if (!dateStr || timeIndex === undefined || !gender) {
     return res.json({
       status: "error",
-      error: `出生小时必须是 0-23 的整数，当前值: ${timeIndex}`,
-      code: "INVALID_HOUR"
-    });
-  }
-
-  const dateRegex = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/;
-  if (!dateRegex.test(dateStr)) {
-    return res.json({
-      status: "error",
-      error: "日期格式错误，请使用 YYYY-MM-DD 格式",
-      code: "INVALID_DATE_FORMAT"
+      error: "缺少必要参数",
+      required: ["dateStr (格式 YYYY-MM-DD)", "timeIndex (0-23 的整数)", "gender ('男' 或 '女')"],
+      code: "MISSING_PARAMS"
     });
   }
 
@@ -29,45 +50,91 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // 2. 排盘（关键：useZone = true）
+  const hour = Number(timeIndex);
+  if (
+    isNaN(hour) ||
+    !Number.isInteger(hour) ||
+    hour < 0 ||
+    hour > 23
+  ) {
+    return res.json({
+      status: "error",
+      error: `出生小时必须是 0-23 的整数，当前值: ${timeIndex}`,
+      code: "INVALID_HOUR"
+    });
+  }
+
+  const dateRegex = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/;
+  if (!dateRegex.test(dateStr)) {
+    return res.json({
+      status: "error",
+      error: "日期格式错误，请使用 YYYY-MM-DD（例如：1990-05-20）",
+      code: "INVALID_DATE_FORMAT"
+    });
+  }
+
+  // === 调用 iztro 排盘 ===
+
   let astrolabe;
   try {
-    astrolabe = astro.bySolar(dateStr, hour, gender, true, 'zh-CN'); // ✅ 禁用时区修正
+    // 关键：第4个参数为 true → 禁用自动时区/真太阳时修正
+    astrolabe = astro.bySolar(dateStr, hour, gender, true, 'zh-CN');
   } catch (e) {
-    const msg = e.message || '';
+    const msg = e.message || '未知错误';
+
     if (msg.startsWith('wrong hour')) {
+      const invalidHour = msg.replace('wrong hour ', '');
       return res.json({
         status: "error",
-        error: `出生小时无效：${msg.replace('wrong hour ', '')}。请确保为 0-23 整数。`,
+        error: `出生小时无效：${invalidHour}。请确保为 0-23 的整数。`,
         detail: msg,
         code: "INVALID_HOUR"
       });
     }
+
+    if (
+      msg.includes('invalid') ||
+      msg.includes('date') ||
+      msg.includes('month') ||
+      msg.includes('day') ||
+      msg.includes('year')
+    ) {
+      return res.json({
+        status: "error",
+        error: "日期不合法，请确保年月日真实存在（如 2023-02-30 无效）。",
+        detail: msg,
+        code: "INVALID_DATE_VALUE"
+      });
+    }
+
     return res.json({
       status: "error",
-      error: "排盘失败，请检查日期是否合法。",
+      error: "排盘服务内部错误，请稍后再试。",
       detail: msg,
-      code: "CALCULATION_FAILED"
+      code: "INTERNAL_ERROR"
     });
   }
 
-  // 3. 找到命宫（直接使用 palaces 中的数据）
+  // === 提取命宫 ===
+
   const mingPalace = astrolabe.palaces.find(p => p.name === '命宫');
   if (!mingPalace) {
     return res.json({
       status: "error",
-      error: "未找到命宫",
+      error: "排盘结果中未找到命宫",
       code: "MISSING_MING_PALACE"
     });
   }
 
-  // 4. 构造前端 URL（✅ 使用原始 hour，不是 astrolabe.timeIndex）
+  // === 构造前端命盘链接 ===
+
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(dateStr)}&t=${hour}&g=${gender === '男' ? 'male' : 'female'}&type=solar`;
 
-  // 5. 返回结果
+  // === 成功响应 ===
+
   res.json({
     status: "success",
-    message: "紫微排盘成功",
+    message: "紫微斗数排盘成功",
     frontend_url,
     data: {
       gender: astrolabe.gender,
@@ -75,7 +142,13 @@ app.post('/calculate', (req, res) => {
       chineseZodiac: astrolabe.chineseZodiac,
       fiveElements: astrolabe.fiveElementsClass,
       lifePalaceBranch: astrolabe.lifePalaceBranch,
-      ming_palace: mingPalace // ✅ 直接使用，已包含完整 minorStars
+      ming_palace: mingPalace // 包含 majorStars / minorStars / adjectiveStars
     }
   });
+});
+
+// 启动服务
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`✅ Ziwei API 已启动，监听端口: ${PORT}`);
 });
