@@ -1,0 +1,13 @@
+﻿{
+  "name": "ziwei-api",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"   <--- 必须要有这一行
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "iztro": "^2.0.5"
+  }
+}
