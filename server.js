@@ -18,10 +18,9 @@ app.get('/', (req, res) => {
 /**
  * 紫微斗数排盘接口
  * 
- * 设计原则：
- * - 所有响应均为 HTTP 200
- * - 业务状态通过 JSON 中的 status 字段表示
- * - 错误信息精准引导用户修正输入
+ * 关键修复：
+ * - 第4个参数设为 true：禁用 iztro 自动时区修正（避免 13 → 25）
+ * - 所有响应返回 HTTP 200，业务状态通过 status 字段表示
  */
 app.post('/calculate', (req, res) => {
   const { dateStr, timeIndex, gender } = req.body;
@@ -45,7 +44,7 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // 3. 小时值校验（关键：防止 hour 越界）
+  // 3. 小时值校验（0-23 整数）
   const hour = Number(timeIndex);
   if (
     isNaN(hour) ||
@@ -60,7 +59,7 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // 4. 日期格式校验（YYYY-MM-DD，且基本合法）
+  // 4. 日期格式校验（YYYY-MM-DD）
   const dateRegex = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/;
   if (!dateRegex.test(dateStr)) {
     return res.json({
@@ -70,14 +69,15 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // 5. 调用 iztro 排盘（阳历）
+  // 5. 调用 iztro 排盘（关键：第4个参数设为 true，禁用自动时区修正）
   let astrolabe;
   try {
-    astrolabe = astro.bySolar(dateStr, hour, gender, false, 'zh-CN');
+    // bySolar(date, hour, gender, useZone, lang)
+    // useZone = true 表示「不自动调整时区」，直接使用用户输入的小时
+    astrolabe = astro.bySolar(dateStr, hour, gender, true, 'zh-CN');
   } catch (e) {
     const msg = e.message || '未知错误';
 
-    // 精准识别小时错误（双重保险）
     if (msg.startsWith('wrong hour')) {
       const invalidHour = msg.replace('wrong hour ', '');
       return res.json({
@@ -88,7 +88,6 @@ app.post('/calculate', (req, res) => {
       });
     }
 
-    // 识别日期相关错误（非法日期如 2月30日）
     if (
       msg.includes('date') ||
       msg.includes('Date') ||
@@ -105,7 +104,6 @@ app.post('/calculate', (req, res) => {
       });
     }
 
-    // 其他未预期错误
     return res.json({
       status: "error",
       error: "排盘服务暂时不可用，请稍后再试。",
@@ -114,7 +112,7 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // 6. 构造前端命盘查看链接（URL 编码更安全）
+  // 6. 构造前端命盘查看链接
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(astrolabe.solarDate)}&t=${astrolabe.timeIndex}&g=${astrolabe.gender === '男' ? 'male' : 'female'}&type=solar`;
 
   // 7. 成功响应
@@ -125,15 +123,15 @@ app.post('/calculate', (req, res) => {
     data: {
       gender: astrolabe.gender,
       solarDate: astrolabe.solarDate,
-      chineseZodiac: astrolabe.chineseZodiac,      // 生肖
-      fiveElements: astrolabe.fiveElementsClass,   // 五行局
-      lifePalaceBranch: astrolabe.lifePalaceBranch, // 命宫地支
+      chineseZodiac: astrolabe.chineseZodiac,
+      fiveElements: astrolabe.fiveElementsClass,
+      lifePalaceBranch: astrolabe.lifePalaceBranch,
       ming_palace: astrolabe.palaces.find(p => p.name === '命宫') || null
     }
   });
 });
 
-// 启动服务（兼容 Zeabur / 本地开发）
+// 启动服务
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Ziwei API 服务已启动，监听端口: ${PORT}`);
