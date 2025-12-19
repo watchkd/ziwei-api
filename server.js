@@ -13,30 +13,27 @@ app.get('/', (req, res) => {
   res.json({ message: 'ZiWei API is running!', version: '2.5.3' });
 });
 
-// 紫微斗数排盘接口
-app.post('/chart', (req, res) => {
+// 👇 接口路径改为 /calculate，匹配你的前端
+app.post('/calculate', (req, res) => {
   try {
     const { year, month, day, hour, minute = 0, gender = 'male' } = req.body;
 
-    // 参数校验
     if (!year || !month || !day || hour === undefined) {
       return res.status(400).json({
         error: 'Missing required fields: year, month, day, hour'
       });
     }
 
-    // 创建命盘
     const chart = new ZiWei({
       year,
       month,
       day,
       hour,
       minute,
-      gender, // 'male' or 'female'
-      location: '东八区' // 固定时区，避免 DST 问题
+      gender,
+      location: '东八区'
     });
 
-    // 返回完整命盘数据
     res.json(chart.toJSON());
 
   } catch (err) {
