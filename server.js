@@ -9,7 +9,7 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
 /**
- * 健康检查接口（用于 Zeabur / Render 探活）
+ * 健康检查接口
  */
 app.get('/', (req, res) => {
   res.status(200).send('Ziwei API is running!');
@@ -18,16 +18,10 @@ app.get('/', (req, res) => {
 /**
  * 紫微斗数排盘接口
  *
- * 参数说明：
- * - dateStr: 字符串，格式 YYYY-MM-DD（如 "1990-05-20"）
- * - timeIndex: 数字或字符串，**代表出生小时（0-23）**，例如：
- *     凌晨0点 → 0
- *     上午9点 → 9
- *     下午1点 → 13
- *     晚上11点 → 23
+ * 参数：
+ * - dateStr: YYYY-MM-DD
+ * - timeIndex: 出生小时（0-23 的整数，如 13 表示下午1点）
  * - gender: "男" 或 "女"
- *
- * 注意：参数名保留为 timeIndex 以兼容某些平台，但语义是 hour。
  */
 app.post('/calculate', (req, res) => {
   const { dateStr, timeIndex, gender } = req.body;
@@ -51,7 +45,7 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 3. 小时解析与校验（timeIndex 实际是 hour）===
+  // === 3. 小时解析与校验 ===
   let hour;
   if (typeof timeIndex === 'number') {
     hour = timeIndex;
@@ -65,12 +59,7 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  if (
-    isNaN(hour) ||
-    !Number.isInteger(hour) ||
-    hour < 0 ||
-    hour > 23
-  ) {
+  if (isNaN(hour) || !Number.isInteger(hour) || hour < 0 || hour > 23) {
     return res.status(400).json({
       status: "error",
       error: `出生小时无效：必须是 0-23 的整数，当前值: ${timeIndex}`,
@@ -91,7 +80,6 @@ app.post('/calculate', (req, res) => {
   // === 5. 调用 iztro 排盘 ===
   let astrolabe;
   try {
-    // 第4个参数 true：禁用真太阳时修正，使用原始 hour
     astrolabe = astro.bySolar(dateStr, hour, gender, true, 'zh-CN');
   } catch (e) {
     const msg = e.message || String(e);
@@ -121,10 +109,39 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 6. 构造前端链接 ===
+  // === 6. 提取关键信息 ===
+  const lifePalaceBranch = astrolabe.lifePalaceBranch;   // 命宫地支
+  const bodyPalaceBranch = astrolabe.bodyPalaceBranch;   // 身宫地支
+
+  // 若 bodyPalaceBranch 不存在（旧版 iztro），尝试 fallback
+  if (!bodyPalaceBranch) {
+    return res.status(500).json({
+      status: "error",
+      error: "当前 iztro 版本不支持身宫计算，请升级到 >=0.8.0",
+      code: "BODY_PALACE_NOT_SUPPORTED"
+    });
+  }
+
+  // 找出身宫宫位名
+  const shenGongPalace = astrolabe.palaces.find(p => p.branch === bodyPalaceBranch);
+  const shenGongName = shenGongPalace ? shenGongPalace.name : '未知';
+
+  // === 7. 构造带命宫/身宫标记的十二宫 ===
+  const palaces = astrolabe.palaces.map(p => ({
+    name: p.name,
+    branch: p.branch,
+    isMingGong: p.branch === lifePalaceBranch,
+    isShenGong: p.branch === bodyPalaceBranch,
+    majorStars: Array.isArray(p.majorStars) ? p.majorStars : [],
+    minorStars: Array.isArray(p.minorStars) ? p.minorStars : [],
+    adjectiveStars: Array.isArray(p.adjectiveStars) ? p.adjectiveStars : [],
+    hiddenStars: Array.isArray(p.hiddenStars) ? p.hiddenStars : []
+  }));
+
+  // === 8. 前端链接 ===
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(dateStr)}&t=${hour}&g=${gender === '男' ? 'male' : 'female'}&type=solar`;
 
-  // === 7. 成功响应：返回完整命盘数据 ===
+  // === 9. 成功响应 ===
   res.status(200).json({
     status: "success",
     message: "紫微斗数排盘成功",
@@ -136,28 +153,21 @@ app.post('/calculate', (req, res) => {
       lunarDate: astrolabe.lunarDate,
       chineseZodiac: astrolabe.chineseZodiac,
       fiveElements: astrolabe.fiveElementsClass,
-      lifePalaceBranch: astrolabe.lifePalaceBranch,
 
-      // ✅ 完整十二宫（核心！）
-      palaces: astrolabe.palaces.map(p => ({
-        name: p.name,               // 宫位名：命宫、兄弟宫...
-        branch: p.branch,           // 地支：子、丑、寅...
-        majorStars: Array.isArray(p.majorStars) ? p.majorStars : [],
-        minorStars: Array.isArray(p.minorStars) ? p.minorStars : [],
-        adjectiveStars: Array.isArray(p.adjectiveStars) ? p.adjectiveStars : [],
-        hiddenStars: Array.isArray(p.hiddenStars) ? p.hiddenStars : []
-      })),
+      // 命宫 & 身宫
+      lifePalaceBranch,
+      bodyPalaceBranch,
+      shenGongName, // 例如 "夫妻宫"
 
-      // 四化飞星（如果支持）
+      // 完整十二宫（含标记）
+      palaces,
+
+      // 其他高级信息
       transformations: astrolabe.transformations || null,
-
-      // 命格（如“紫府同宫格”）
       patterns: Array.isArray(astrolabe.patterns) ? astrolabe.patterns : [],
-
-      // 十年大运（大限）
       decades: Array.isArray(astrolabe.decades) ? astrolabe.decades : [],
 
-      // 四柱八字
+      // 四柱
       yearPillar: astrolabe.yearPillar || '',
       monthPillar: astrolabe.monthPillar || '',
       dayPillar: astrolabe.dayPillar || '',
