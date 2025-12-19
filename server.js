@@ -9,9 +9,9 @@ app.use(express.json({ limit: '1mb' }));
 const CACHE = new Map();
 const CACHE_TTL = 10 * 60 * 1000; // 10分钟缓存
 
-// 时辰索引 (0=早子, 1=丑, ..., 11=亥, 12=晚子)
-// 注意：晚子时（12）不在此映射中，需特殊处理
-const TIME_INDEX_TO_HOUR = [0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21]; // length=12 (0-11)
+// 时辰索引 (0=早子, 1=丑, ..., 11=亥)
+// 注意：timeIndex=12（晚子时）需特殊处理，不在此数组中
+const TIME_INDEX_TO_HOUR = [0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21]; // length=12 (索引 0-11)
 
 // 安全地将 YYYY-MM-DD 日期加一天
 function addOneDay(dateStr) {
@@ -36,8 +36,7 @@ app.post('/calculate', (req, res) => {
   if (!dateStr || timeIndex === undefined || !gender) {
     return res.status(400).json({
       status: "error",
-      error: "缺少必要参数",
-      required: ["dateStr", "timeIndex", "gender"],
+      error: "缺少必要参数：dateStr, timeIndex, gender",
       code: "MISSING_PARAMS"
     });
   }
@@ -51,7 +50,7 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 3. timeIndex 安全解析与校验 ===
+  // === 3. timeIndex 解析与校验（核心修复点）===
   let parsedTimeIndex;
   if (typeof timeIndex === 'number') {
     if (!Number.isInteger(timeIndex)) {
@@ -67,15 +66,15 @@ app.post('/calculate', (req, res) => {
     if (trimmed === '') {
       return res.status(400).json({
         status: "error",
-        error: "timeIndex 不能为空字符串",
+        error: "timeIndex 不能为空",
         code: "INVALID_TIME_INDEX"
       });
     }
-    const num = Number(trimmed);
-    if (isNaN(num) || !Number.isInteger(num)) {
+    const num = parseInt(trimmed, 10); // 强制转整数
+    if (isNaN(num)) {
       return res.status(400).json({
         status: "error",
-        error: "timeIndex 必须是 0-12 的整数（如 '7' 或 7）",
+        error: "timeIndex 必须是数字（如 '7' 或 7）",
         code: "INVALID_TIME_INDEX"
       });
     }
@@ -88,6 +87,7 @@ app.post('/calculate', (req, res) => {
     });
   }
 
+  // 范围校验（0–12）
   if (parsedTimeIndex < 0 || parsedTimeIndex > 12) {
     return res.status(400).json({
       status: "error",
@@ -106,24 +106,24 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 5. 确定实际排盘日期和小时（关键：处理晚子时）===
+  // === 5. 确定实际排盘日期和小时 ===
   let actualDate = dateStr;
   let hourForIztro;
 
   if (parsedTimeIndex === 12) {
-    // 晚子时（23:00–24:00）→ 视为次日 00:00
+    // 晚子时（23:00–24:00）→ 次日 00:00
     try {
       actualDate = addOneDay(dateStr);
     } catch (e) {
       return res.status(400).json({
         status: "error",
-        error: "无法计算次日日期，请检查输入日期是否合法",
+        error: "无法计算次日日期，请检查输入是否合法",
         code: "DATE_CALCULATION_ERROR"
       });
     }
     hourForIztro = 0;
   } else {
-    // 0=早子 → 0, 1=丑 → 1, ..., 11=亥 → 21
+    // timeIndex 0–11 → 映射到对应 hour
     hourForIztro = TIME_INDEX_TO_HOUR[parsedTimeIndex];
     if (hourForIztro === undefined) {
       return res.status(500).json({
@@ -134,7 +134,7 @@ app.post('/calculate', (req, res) => {
     }
   }
 
-  // === 6. 缓存检查（基于原始输入）===
+  // === 6. 缓存键（基于原始输入）===
   const cacheKey = `${dateStr}|${parsedTimeIndex}|${gender}`;
   const cached = CACHE.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
@@ -148,19 +148,19 @@ app.post('/calculate', (req, res) => {
     astrolabe = astro.bySolar(actualDate, hourForIztro, gender, true, 'zh-CN');
   } catch (e) {
     const msg = e.message || '未知错误';
-    console.error('❌ 排盘失败:', msg, '| 使用日期:', actualDate, '| 小时:', hourForIztro);
+    console.error('❌ 排盘失败:', msg, '| date:', actualDate, '| hour:', hourForIztro);
 
-    if (msg.startsWith('wrong hour')) {
+    if (msg.includes('wrong hour') || msg.includes('hour')) {
       return res.status(400).json({
         status: "error",
-        error: `小时值 ${hourForIztro} 超出范围（应为 0-23）`,
+        error: `小时值 ${hourForIztro} 无效（应为 0-23）`,
         code: "IZTRO_HOUR_ERROR"
       });
     }
     if (/(invalid|date|month|day|year)/i.test(msg)) {
       return res.status(400).json({
         status: "error",
-        error: "日期不合法，请确保年月日真实存在（如非 2月30日）",
+        error: "日期不合法，请确保年月日真实存在",
         code: "INVALID_DATE_VALUE"
       });
     }
@@ -171,8 +171,8 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 8. 构造前端链接（使用原始输入）===
-  const displayHour = parsedTimeIndex === 12 ? 23 : hourForIztro; // 前端显示 23 表示晚子时
+  // === 8. 构造前端链接（显示原始时间含义）===
+  const displayHour = parsedTimeIndex === 12 ? 23 : hourForIztro;
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(dateStr)}&t=${displayHour}&g=${gender === '男' ? 'male' : 'female'}&type=solar`;
 
   // === 9. 安全提取命盘数据 ===
@@ -233,16 +233,7 @@ app.post('/calculate', (req, res) => {
   });
 
   // === 12. 返回结果 ===
-  try {
-    res.json(response);
-  } catch (serializeErr) {
-    console.error('❌ JSON 序列化失败:', serializeErr.message);
-    res.status(500).json({
-      status: "error",
-      error: "命盘数据格式异常",
-      code: "SERIALIZE_ERROR"
-    });
-  }
+  res.json(response);
 });
 
 const PORT = process.env.PORT || 3000;
