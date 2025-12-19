@@ -6,90 +6,64 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json());
 
-// 健康检查
 app.get('/', (req, res) => {
-  res.json({ message: 'ZiWei API v2.5.3 - Ready for /calculate' });
+  res.json({ message: 'ZiWei API - Ready for plugin format' });
 });
 
-// 主接口：/calculate
+// 十二时辰映射：timeIndex → 小时（取中间值）
+const TIME_INDEX_TO_HOUR = {
+  0: 0,   // 子时 23-1 → 用 0（特殊处理，跨日）
+  1: 2,   // 丑时
+  2: 4,   // 寅时
+  3: 6,   // 卯时
+  4: 8,   // 辰时
+  5: 10,  // 巳时 ✅
+  6: 12,  // 午时
+  7: 14,  // 未时
+  8: 16,  // 申时
+  9: 18,  // 酉时
+  10: 20, // 戌时
+  11: 22  // 亥时
+};
+
 app.post('/calculate', (req, res) => {
-  console.log('🔍 Raw request body:', JSON.stringify(req.body, null, 2));
+  console.log('📥 Received:', req.body);
 
   try {
-    // 尝试从多层结构中提取参数
-    let data = req.body;
+    const { dateStr, timeIndex, gender } = req.body;
 
-    // 如果有 data 字段（如飞书/钉钉插件）
-    if (req.body.data && typeof req.body.data === 'object') {
-      data = req.body.data;
-    }
-    // 如果有 payload 或 params
-    if (req.body.payload && typeof req.body.payload === 'object') {
-      data = req.body.payload;
-    }
-    if (req.body.params && typeof req.body.params === 'object') {
-      data = req.body.params;
-    }
-
-    // 智能提取年月日时
-    const year =
-      data.year ||
-      data.birthYear ||
-      data.y ||
-      data.年 ||
-      (data.birthday ? new Date(data.birthday).getFullYear() : null);
-
-    const month =
-      data.month ||
-      data.birthMonth ||
-      data.m ||
-      data.月 ||
-      (data.birthday ? new Date(data.birthday).getMonth() + 1 : null);
-
-    const day =
-      data.day ||
-      data.birthDay ||
-      data.d ||
-      data.日 ||
-      (data.birthday ? new Date(data.birthday).getDate() : null);
-
-    let hour =
-      data.hour ||
-      data.birthHour ||
-      data.h ||
-      data.时;
-
-    const gender =
-      (data.gender === 'female' || data.gender === '女' || data.sex === 0 || data.sex === 'F') ? 'female' :
-      'male';
-
-    // 强制转为数字
-    const numYear = parseInt(year);
-    const numMonth = parseInt(month);
-    const numDay = parseInt(day);
-    const numHour = parseInt(hour);
-
-    console.log('🎯 Parsed:', { year: numYear, month: numMonth, day: numDay, hour: numHour, gender });
-
-    // 校验
-    if (!numYear || !numMonth || !numDay || numHour === undefined || isNaN(numHour)) {
+    // 解析日期
+    if (!dateStr || !timeIndex) {
       return res.status(400).json({
-        error: 'Missing or invalid: year, month, day, hour',
-        received: req.body,
-        parsed: { year, month, day, hour, gender }
+        error: 'Missing dateStr or timeIndex',
+        received: req.body
       });
     }
 
-    // 生成命盘（v2.5.3 完整支持身宫）
+    const dateParts = dateStr.split('-');
+    if (dateParts.length !== 3) {
+      return res.status(400).json({ error: 'Invalid dateStr format, expected YYYY-MM-DD' });
+    }
+
+    const year = parseInt(dateParts[0]);
+    const month = parseInt(dateParts[1]);
+    const day = parseInt(dateParts[2]);
+    const hour = TIME_INDEX_TO_HOUR[parseInt(timeIndex)] ?? 12; // 默认午时
+
+    const parsedGender = (gender === '女' || gender === 'female') ? 'female' : 'male';
+
+    console.log('✅ Parsed:', { year, month, day, hour, gender: parsedGender });
+
+    // 生成命盘
     const chart = new ZiWei({
-      year: numYear,
-      month: numMonth,
-      day: numDay,
-      hour: numHour,
+      year,
+      month,
+      day,
+      hour,
       minute: 0,
-      gender,
+      gender: parsedGender,
       location: '东八区'
     });
 
@@ -98,7 +72,7 @@ app.post('/calculate', (req, res) => {
   } catch (err) {
     console.error('💥 Error:', err);
     res.status(500).json({
-      error: 'Internal server error',
+      error: 'Failed to generate chart',
       message: err.message
     });
   }
