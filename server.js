@@ -1,6 +1,14 @@
 const express = require('express');
 const cors = require('cors');
-const { ZiWei } = require('iztro');
+
+// 🔧 安全加载 ZiWei（兼容 ESM / CommonJS）
+const iztroModule = require('iztro');
+const ZiWei = iztroModule.ZiWei || (iztroModule.default && iztroModule.default.ZiWei);
+
+if (!ZiWei) {
+  console.error('❌ iztro module structure unexpected:', iztroModule);
+  throw new Error('Cannot find ZiWei class in iztro module');
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,18 +16,14 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-app.get('/', (req, res) => {
-  res.json({ message: 'ZiWei API - Ready for plugin format' });
-});
-
-// 十二时辰映射：timeIndex → 小时（取中间值）
+// 十二时辰映射
 const TIME_INDEX_TO_HOUR = {
-  0: 0,   // 子时 23-1 → 用 0（特殊处理，跨日）
+  0: 0,   // 子时
   1: 2,   // 丑时
   2: 4,   // 寅时
   3: 6,   // 卯时
   4: 8,   // 辰时
-  5: 10,  // 巳时 ✅
+  5: 10,  // 巳时
   6: 12,  // 午时
   7: 14,  // 未时
   8: 16,  // 申时
@@ -28,35 +32,30 @@ const TIME_INDEX_TO_HOUR = {
   11: 22  // 亥时
 };
 
+app.get('/', (req, res) => {
+  res.json({ message: 'ZiWei API - Fixed ZiWei constructor' });
+});
+
 app.post('/calculate', (req, res) => {
   console.log('📥 Received:', req.body);
 
   try {
     const { dateStr, timeIndex, gender } = req.body;
 
-    // 解析日期
-    if (!dateStr || !timeIndex) {
-      return res.status(400).json({
-        error: 'Missing dateStr or timeIndex',
-        received: req.body
-      });
+    if (!dateStr || timeIndex === undefined) {
+      return res.status(400).json({ error: 'Missing dateStr or timeIndex' });
     }
 
-    const dateParts = dateStr.split('-');
-    if (dateParts.length !== 3) {
-      return res.status(400).json({ error: 'Invalid dateStr format, expected YYYY-MM-DD' });
-    }
-
-    const year = parseInt(dateParts[0]);
-    const month = parseInt(dateParts[1]);
-    const day = parseInt(dateParts[2]);
-    const hour = TIME_INDEX_TO_HOUR[parseInt(timeIndex)] ?? 12; // 默认午时
-
-    const parsedGender = (gender === '女' || gender === 'female') ? 'female' : 'male';
+    const [yearStr, monthStr, dayStr] = dateStr.split('-');
+    const year = parseInt(yearStr);
+    const month = parseInt(monthStr);
+    const day = parseInt(dayStr);
+    const hour = TIME_INDEX_TO_HOUR[parseInt(timeIndex)] ?? 12;
+    const parsedGender = (gender === '女') ? 'female' : 'male';
 
     console.log('✅ Parsed:', { year, month, day, hour, gender: parsedGender });
 
-    // 生成命盘
+    // ✅ 现在 ZiWei 是有效的构造函数
     const chart = new ZiWei({
       year,
       month,
@@ -70,10 +69,11 @@ app.post('/calculate', (req, res) => {
     res.json(chart.toJSON());
 
   } catch (err) {
-    console.error('💥 Error:', err);
+    console.error('💥 Chart error:', err);
     res.status(500).json({
       error: 'Failed to generate chart',
-      message: err.message
+      message: err.message,
+      stack: process.env.NODE_ENV === 'dev' ? err.stack : undefined
     });
   }
 });
