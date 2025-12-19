@@ -9,7 +9,7 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
 /**
- * 健康检查接口（Zeabur 探活）
+ * 健康检查接口（用于 Zeabur / Render 探活）
  */
 app.get('/', (req, res) => {
   res.status(200).send('Ziwei API is running!');
@@ -20,14 +20,14 @@ app.get('/', (req, res) => {
  *
  * 参数说明：
  * - dateStr: 字符串，格式 YYYY-MM-DD（如 "1990-05-20"）
- * - timeIndex: 数字或字符串，**实际代表出生小时（0-23）**，例如：
+ * - timeIndex: 数字或字符串，**代表出生小时（0-23）**，例如：
  *     凌晨0点 → 0
  *     上午9点 → 9
  *     下午1点 → 13
  *     晚上11点 → 23
  * - gender: "男" 或 "女"
  *
- * 注意：虽然参数名是 timeIndex，但语义是 hour（为兼容某些平台命名限制）
+ * 注意：参数名保留为 timeIndex 以兼容某些平台，但语义是 hour。
  */
 app.post('/calculate', (req, res) => {
   const { dateStr, timeIndex, gender } = req.body;
@@ -121,37 +121,47 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 6. 提取命宫 ===
-  const mingPalace = astrolabe.palaces.find(p => p.name === '命宫');
-  if (!mingPalace) {
-    return res.status(500).json({
-      status: "error",
-      error: "排盘结果中未找到命宫",
-      code: "MISSING_MING_PALACE"
-    });
-  }
-
-  // === 7. 构造前端链接 ===
+  // === 6. 构造前端链接 ===
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(dateStr)}&t=${hour}&g=${gender === '男' ? 'male' : 'female'}&type=solar`;
 
-  // === 8. 成功响应 ===
+  // === 7. 成功响应：返回完整命盘数据 ===
   res.status(200).json({
     status: "success",
     message: "紫微斗数排盘成功",
     frontend_url,
     data: {
+      // 基础信息
       gender: astrolabe.gender,
       solarDate: astrolabe.solarDate,
       lunarDate: astrolabe.lunarDate,
       chineseZodiac: astrolabe.chineseZodiac,
       fiveElements: astrolabe.fiveElementsClass,
       lifePalaceBranch: astrolabe.lifePalaceBranch,
-      ming_palace: {
-        name: mingPalace.name,
-        majorStars: mingPalace.majorStars,
-        minorStars: mingPalace.minorStars,
-        adjectiveStars: mingPalace.adjectiveStars
-      }
+
+      // ✅ 完整十二宫（核心！）
+      palaces: astrolabe.palaces.map(p => ({
+        name: p.name,               // 宫位名：命宫、兄弟宫...
+        branch: p.branch,           // 地支：子、丑、寅...
+        majorStars: Array.isArray(p.majorStars) ? p.majorStars : [],
+        minorStars: Array.isArray(p.minorStars) ? p.minorStars : [],
+        adjectiveStars: Array.isArray(p.adjectiveStars) ? p.adjectiveStars : [],
+        hiddenStars: Array.isArray(p.hiddenStars) ? p.hiddenStars : []
+      })),
+
+      // 四化飞星（如果支持）
+      transformations: astrolabe.transformations || null,
+
+      // 命格（如“紫府同宫格”）
+      patterns: Array.isArray(astrolabe.patterns) ? astrolabe.patterns : [],
+
+      // 十年大运（大限）
+      decades: Array.isArray(astrolabe.decades) ? astrolabe.decades : [],
+
+      // 四柱八字
+      yearPillar: astrolabe.yearPillar || '',
+      monthPillar: astrolabe.monthPillar || '',
+      dayPillar: astrolabe.dayPillar || '',
+      hourPillar: astrolabe.hourPillar || ''
     }
   });
 });
