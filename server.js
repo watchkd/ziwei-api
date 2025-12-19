@@ -1,5 +1,5 @@
 const express = require('express');
-const { astro } = require('iztro'); // 注意：iztro 只导出 astro
+const { astro } = require('iztro'); // iztro 只导出 astro
 const cors = require('cors');
 
 const app = express();
@@ -7,6 +7,14 @@ const app = express();
 // 启用 CORS 和 JSON 解析
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+
+// === 内存缓存（可选但推荐）===
+const CACHE = new Map();
+const CACHE_TTL = 10 * 60 * 1000; // 缓存 10 分钟
+
+function getCacheKey(dateStr, hour, gender) {
+  return `${dateStr}|${hour}|${gender}`;
+}
 
 /**
  * 健康检查接口（用于 Zeabur 探活）
@@ -32,7 +40,6 @@ app.post('/calculate', (req, res) => {
   const { dateStr, timeIndex, gender } = req.body;
 
   // === 参数校验 ===
-
   if (!dateStr || timeIndex === undefined || !gender) {
     return res.json({
       status: "error",
@@ -73,11 +80,18 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 调用 iztro 排盘 ===
+  // === 缓存检查 ===
+  const cacheKey = getCacheKey(dateStr, hour, gender);
+  const cached = CACHE.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    console.log('✅ 命中缓存:', cacheKey);
+    return res.json(cached.response);
+  }
 
+  // === 调用 iztro 排盘 ===
   let astrolabe;
   try {
-    // 关键：第4个参数为 true → 禁用自动时区/真太阳时修正
+    // 第4个参数为 true → 禁用自动时区/真太阳时修正
     astrolabe = astro.bySolar(dateStr, hour, gender, true, 'zh-CN');
   } catch (e) {
     const msg = e.message || '未知错误';
@@ -115,36 +129,24 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 提取命宫 ===
-
-  const mingPalace = astrolabe.palaces.find(p => p.name === '命宫');
-  if (!mingPalace) {
-    return res.json({
-      status: "error",
-      error: "排盘结果中未找到命宫",
-      code: "MISSING_MING_PALACE"
-    });
-  }
-
   // === 构造前端命盘链接 ===
-
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(dateStr)}&t=${hour}&g=${gender === '男' ? 'male' : 'female'}&type=solar`;
 
-  // === 成功响应 ===
-
-  res.json({
+  // === 成功响应：返回完整命盘数据 ===
+  const response = {
     status: "success",
     message: "紫微斗数排盘成功",
     frontend_url,
-    data: {
-      gender: astrolabe.gender,
-      solarDate: astrolabe.solarDate,
-      chineseZodiac: astrolabe.chineseZodiac,
-      fiveElements: astrolabe.fiveElementsClass,
-      lifePalaceBranch: astrolabe.lifePalaceBranch,
-      ming_palace: mingPalace // 包含 majorStars / minorStars / adjectiveStars
-    }
+    chart_data: astrolabe // ✅ 包含 palaces（十二宫）、decadesLuck（大运）等完整结构
+  };
+
+  // === 存入缓存 ===
+  CACHE.set(cacheKey, {
+    timestamp: Date.now(),
+    response
   });
+
+  res.json(response);
 });
 
 // 启动服务
