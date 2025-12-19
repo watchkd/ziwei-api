@@ -1,6 +1,6 @@
 FROM node:20-alpine
 WORKDIR /src
-RUN npm config set registry https://registry.npmmirror.com
+COPY package.json ./
+RUN npm install --registry=https://registry.npmjs.org --no-fund --no-audit
 COPY . .
-RUN npm install
 CMD ["node", "server.js"]
