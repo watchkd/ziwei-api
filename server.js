@@ -4,29 +4,16 @@ const cors = require('cors');
 
 const app = express();
 
-// 中间件
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
-/**
- * 健康检查接口
- */
 app.get('/', (req, res) => {
   res.status(200).send('Ziwei API is running!');
 });
 
-/**
- * 紫微斗数排盘接口
- *
- * 参数：
- * - dateStr: YYYY-MM-DD
- * - timeIndex: 出生小时（0-23 的整数，如 13 表示下午1点）
- * - gender: "男" 或 "女"
- */
 app.post('/calculate', (req, res) => {
   const { dateStr, timeIndex, gender } = req.body;
 
-  // === 1. 必填校验 ===
   if (!dateStr || timeIndex === undefined || !gender) {
     return res.status(400).json({
       status: "error",
@@ -36,7 +23,6 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 2. 性别校验 ===
   if (gender !== '男' && gender !== '女') {
     return res.status(400).json({
       status: "error",
@@ -45,7 +31,6 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 3. 小时解析与校验 ===
   let hour;
   if (typeof timeIndex === 'number') {
     hour = timeIndex;
@@ -67,7 +52,6 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 4. 日期格式校验 ===
   const dateRegex = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/;
   if (!dateRegex.test(dateStr)) {
     return res.status(400).json({
@@ -77,7 +61,6 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 5. 调用 iztro 排盘 ===
   let astrolabe;
   try {
     astrolabe = astro.bySolar(dateStr, hour, gender, true, 'zh-CN');
@@ -109,65 +92,54 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 6. 提取关键信息 ===
-  const lifePalaceBranch = astrolabe.lifePalaceBranch;   // 命宫地支
-  const bodyPalaceBranch = astrolabe.bodyPalaceBranch;   // 身宫地支
+  // 提取命宫地支（所有版本都支持）
+  const lifePalaceBranch = astrolabe.lifePalaceBranch;
 
-  // 若 bodyPalaceBranch 不存在（旧版 iztro），尝试 fallback
-  if (!bodyPalaceBranch) {
-    return res.status(500).json({
-      status: "error",
-      error: "当前 iztro 版本不支持身宫计算，请升级到 >=0.8.0",
-      code: "BODY_PALACE_NOT_SUPPORTED"
-    });
+  // 安全提取身宫（0.8.0+ 支持，旧版忽略）
+  let bodyPalaceBranch = null;
+  let shenGongName = null;
+  try {
+    if (astrolabe && typeof astrolabe.bodyPalaceBranch !== 'undefined') {
+      bodyPalaceBranch = astrolabe.bodyPalaceBranch;
+      const shenGongPalace = astrolabe.palaces.find(p => p.branch === bodyPalaceBranch);
+      shenGongName = shenGongPalace ? shenGongPalace.name : null;
+    }
+  } catch (e) {
+    console.warn('⚠️ 身宫信息不可用，跳过。');
   }
 
-  // 找出身宫宫位名
-  const shenGongPalace = astrolabe.palaces.find(p => p.branch === bodyPalaceBranch);
-  const shenGongName = shenGongPalace ? shenGongPalace.name : '未知';
-
-  // === 7. 构造带命宫/身宫标记的十二宫 ===
+  // 构造十二宫（标记命宫，有条件标记身宫）
   const palaces = astrolabe.palaces.map(p => ({
     name: p.name,
     branch: p.branch,
     isMingGong: p.branch === lifePalaceBranch,
-    isShenGong: p.branch === bodyPalaceBranch,
+    isShenGong: bodyPalaceBranch ? (p.branch === bodyPalaceBranch) : false,
     majorStars: Array.isArray(p.majorStars) ? p.majorStars : [],
     minorStars: Array.isArray(p.minorStars) ? p.minorStars : [],
     adjectiveStars: Array.isArray(p.adjectiveStars) ? p.adjectiveStars : [],
     hiddenStars: Array.isArray(p.hiddenStars) ? p.hiddenStars : []
   }));
 
-  // === 8. 前端链接 ===
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(dateStr)}&t=${hour}&g=${gender === '男' ? 'male' : 'female'}&type=solar`;
 
-  // === 9. 成功响应 ===
   res.status(200).json({
     status: "success",
     message: "紫微斗数排盘成功",
+    note: bodyPalaceBranch ? null : "当前环境未返回身宫信息，已跳过。",
     frontend_url,
     data: {
-      // 基础信息
       gender: astrolabe.gender,
       solarDate: astrolabe.solarDate,
       lunarDate: astrolabe.lunarDate,
       chineseZodiac: astrolabe.chineseZodiac,
       fiveElements: astrolabe.fiveElementsClass,
-
-      // 命宫 & 身宫
       lifePalaceBranch,
       bodyPalaceBranch,
-      shenGongName, // 例如 "夫妻宫"
-
-      // 完整十二宫（含标记）
+      shenGongName,
       palaces,
-
-      // 其他高级信息
       transformations: astrolabe.transformations || null,
       patterns: Array.isArray(astrolabe.patterns) ? astrolabe.patterns : [],
       decades: Array.isArray(astrolabe.decades) ? astrolabe.decades : [],
-
-      // 四柱
       yearPillar: astrolabe.yearPillar || '',
       monthPillar: astrolabe.monthPillar || '',
       dayPillar: astrolabe.dayPillar || '',
@@ -176,7 +148,6 @@ app.post('/calculate', (req, res) => {
   });
 });
 
-// 启动服务
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Ziwei API 已启动，监听端口: ${PORT}`);
