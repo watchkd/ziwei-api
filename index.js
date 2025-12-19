@@ -6,46 +6,55 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(cors());
+// 支持 JSON 格式 (application/json)
 app.use(express.json());
+// 支持 表单 格式 (application/x-www-form-urlencoded) -> 这很重要！
+app.use(express.urlencoded({ extended: true }));
 
-// --- 调试中间件：打印所有进来的请求 ---
-app.use((req, res, next) => {
-  console.log(`收到请求: ${req.method} ${req.url}`);
-  next();
-});
-
-// --- 根路由：用来验证版本 ---
+// 首页
 app.get('/', (req, res) => {
-  // 注意看这里，我加了【新版验证】这几个字
-  res.send('【新版验证成功】紫微斗数 API 已更新！如果你看到这句话，说明代码没问题。');
+  res.send('API 准备就绪。请通过 POST /calculate 调用。');
 });
 
-// --- 核心计算接口 ---
 app.post('/calculate', (req, res) => {
-  console.log('正在处理 POST /calculate 请求...'); // 日志标记
+  // --- 关键日志：打印收到的所有数据，帮你看清插件传了什么 ---
+  console.log('--- 收到新请求 ---');
+  console.log('Headers:', JSON.stringify(req.headers));
+  console.log('Body数据:', JSON.stringify(req.body));
+  console.log('Query数据:', JSON.stringify(req.query));
+  // -----------------------------------------------------
+
   try {
-    // 兼容 query 和 body 参数
+    // 混合获取参数，无论插件放在 Body 还是 Query 都能读到
     const params = { ...req.query, ...req.body };
     const { date, timeIndex, gender, type = 'solar', fixLeap, isLeapMonth } = params;
 
+    // 严谨的检查
     if (!date || timeIndex === undefined || !gender) {
-      return res.status(400).json({ error: '参数缺失: date, timeIndex, gender' });
+      console.log('失败：参数缺失'); // 打印失败原因
+      return res.status(400).json({ 
+        error: '参数缺失: date, timeIndex, gender',
+        received: params // 把收到的东西返回给你看，方便调试
+      });
     }
 
     let astrolabe;
+    // 核心计算逻辑
     if (type === 'lunar') {
-      astrolabe = astro.byLunar(date, Number(timeIndex), gender, isLeapMonth === true, fixLeap !== 'false', 'zh-CN');
+      astrolabe = astro.byLunar(date, Number(timeIndex), gender, isLeapMonth === 'true', fixLeap !== 'false', 'zh-CN');
     } else {
       astrolabe = astro.bySolar(date, Number(timeIndex), gender, fixLeap !== 'false', 'zh-CN');
     }
-    
+
+    console.log('成功：计算完成');
     res.json({ success: true, data: astrolabe });
+
   } catch (error) {
-    console.error('计算出错:', error);
+    console.error('系统错误:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
