@@ -7,10 +7,10 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
 const CACHE = new Map();
-const CACHE_TTL = 10 * 60 * 1000;
+const CACHE_TTL = 10 * 60 * 1000; // 10分钟缓存
 
-// === 时辰索引 → iztro hour 映射表 ===
-const TIME_INDEX_TO_HOUR = [0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]; // length=13
+// 时辰索引 (0-12) → iztro 所需 hour (0-23)
+const TIME_INDEX_TO_HOUR = [0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23];
 
 app.get('/', (req, res) => {
   res.status(200).send('Ziwei API is running!');
@@ -19,7 +19,7 @@ app.get('/', (req, res) => {
 app.post('/calculate', (req, res) => {
   const { dateStr, timeIndex, gender } = req.body;
 
-  // === 参数校验 ===
+  // === 1. 必填参数检查 ===
   if (!dateStr || timeIndex === undefined || !gender) {
     return res.status(400).json({
       status: "error",
@@ -29,6 +29,7 @@ app.post('/calculate', (req, res) => {
     });
   }
 
+  // === 2. 性别校验 ===
   if (gender !== '男' && gender !== '女') {
     return res.status(400).json({
       status: "error",
@@ -37,35 +38,71 @@ app.post('/calculate', (req, res) => {
     });
   }
 
-  // === 校验 timeIndex 是否为 0-12 的整数 ===
-  if (typeof timeIndex !== 'number' || !Number.isInteger(timeIndex) || timeIndex < 0 || timeIndex > 12) {
+  // === 3. timeIndex 安全解析与校验 ===
+  let parsedTimeIndex;
+  if (typeof timeIndex === 'number') {
+    if (!Number.isInteger(timeIndex)) {
+      return res.status(400).json({
+        status: "error",
+        error: "timeIndex 必须是整数（不能带小数）",
+        code: "INVALID_TIME_INDEX"
+      });
+    }
+    parsedTimeIndex = timeIndex;
+  } else if (typeof timeIndex === 'string') {
+    const trimmed = timeIndex.trim();
+    if (trimmed === '') {
+      return res.status(400).json({
+        status: "error",
+        error: "timeIndex 不能为空字符串",
+        code: "INVALID_TIME_INDEX"
+      });
+    }
+    const num = Number(trimmed);
+    if (isNaN(num) || !Number.isInteger(num)) {
+      return res.status(400).json({
+        status: "error",
+        error: "timeIndex 必须是 0-12 的整数（如 '7' 或 7）",
+        code: "INVALID_TIME_INDEX"
+      });
+    }
+    parsedTimeIndex = num;
+  } else {
     return res.status(400).json({
       status: "error",
-      error: "timeIndex 必须是 0-12 的整数",
+      error: "timeIndex 类型无效，必须是数字或字符串",
       code: "INVALID_TIME_INDEX"
     });
   }
 
-  // === 日期格式校验 ===
+  if (parsedTimeIndex < 0 || parsedTimeIndex > 12) {
+    return res.status(400).json({
+      status: "error",
+      error: "timeIndex 必须在 0 到 12 之间（含）",
+      code: "INVALID_TIME_INDEX"
+    });
+  }
+
+  // === 4. 日期格式校验 ===
   const dateRegex = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/;
   if (!dateRegex.test(dateStr)) {
     return res.status(400).json({
       status: "error",
-      error: "日期格式错误，请使用 YYYY-MM-DD",
+      error: "日期格式错误，请使用 YYYY-MM-DD（例如：1990-05-20）",
       code: "INVALID_DATE_FORMAT"
     });
   }
 
-  // === 缓存检查 ===
-  const cacheKey = `${dateStr}|${timeIndex}|${gender}`;
+  // === 5. 缓存检查 ===
+  const cacheKey = `${dateStr}|${parsedTimeIndex}|${gender}`;
   const cached = CACHE.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     console.log('✅ 命中缓存:', cacheKey);
     return res.json(cached.response);
   }
 
-  // === 调用 iztro 排盘 ===
-  const hourForIztro = TIME_INDEX_TO_HOUR[timeIndex];
+  // === 6. 调用 iztro 排盘 ===
+  const hourForIztro = TIME_INDEX_TO_HOUR[parsedTimeIndex];
   let astrolabe;
   try {
     astrolabe = astro.bySolar(dateStr, hourForIztro, gender, true, 'zh-CN');
@@ -74,18 +111,31 @@ app.post('/calculate', (req, res) => {
     console.error('❌ 排盘失败:', msg);
 
     if (msg.startsWith('wrong hour')) {
-      return res.status(400).json({ status: "error", error: "小时无效", code: "INVALID_HOUR" });
+      return res.status(400).json({
+        status: "error",
+        error: "小时值无效，请联系开发者",
+        code: "IZTRO_HOUR_ERROR"
+      });
     }
     if (/(invalid|date|month|day|year)/i.test(msg)) {
-      return res.status(400).json({ status: "error", error: "日期不合法", code: "INVALID_DATE_VALUE" });
+      return res.status(400).json({
+        status: "error",
+        error: "日期不合法，请确保年月日真实存在",
+        code: "INVALID_DATE_VALUE"
+      });
     }
-    return res.status(500).json({ status: "error", error: "内部错误", code: "INTERNAL_ERROR" });
+    return res.status(500).json({
+      status: "error",
+      error: "排盘服务内部错误",
+      detail: process.env.NODE_ENV === 'development' ? msg : undefined,
+      code: "INTERNAL_ERROR"
+    });
   }
 
-  // === 构造前端链接 ===
+  // === 7. 构造前端链接 ===
   const frontend_url = `https://ziwei.pub/astrolabe/?d=${encodeURIComponent(dateStr)}&t=${hourForIztro}&g=${gender === '男' ? 'male' : 'female'}&type=solar`;
 
-  // === 安全提取命盘数据 ===
+  // === 8. 安全提取命盘数据（防止循环引用/函数等）===
   const safePalaces = astrolabe.palaces.map(p => ({
     name: p.name || '',
     branch: p.branch || '',
@@ -110,13 +160,17 @@ app.post('/calculate', (req, res) => {
     description: d.description || '',
   }));
 
+  // === 9. 构造响应 ===
   const response = {
     status: "success",
     message: "紫微斗数排盘成功",
     frontend_url,
     chart_data: {
-      dateStr,
-      timeIndex,
+      input: {
+        dateStr,
+        timeIndex: parsedTimeIndex, // 标准化后的整数
+        gender
+      },
       resolvedHour: hourForIztro,
       gender: astrolabe.gender,
       solarDate: astrolabe.solarDate,
@@ -129,17 +183,26 @@ app.post('/calculate', (req, res) => {
     }
   };
 
-  CACHE.set(cacheKey, { timestamp: Date.now(), response });
+  // === 10. 写入缓存 ===
+  CACHE.set(cacheKey, {
+    timestamp: Date.now(),
+    response
+  });
 
+  // === 11. 安全返回 ===
   try {
     res.json(response);
-  } catch (err) {
-    console.error('❌ 序列化失败:', err.message);
-    res.status(500).json({ status: "error", error: "数据格式异常", code: "SERIALIZE_ERROR" });
+  } catch (serializeErr) {
+    console.error('❌ JSON 序列化失败:', serializeErr.message);
+    res.status(500).json({
+      status: "error",
+      error: "命盘数据无法序列化，请联系开发者",
+      code: "SERIALIZE_ERROR"
+    });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ Ziwei API 启动，端口: ${PORT}`);
+  console.log(`✅ Ziwei API 已启动，监听端口: ${PORT}`);
 });
